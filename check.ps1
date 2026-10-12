@@ -88,7 +88,7 @@ Write-Host ("  WMI / O systeme      : {0}" -f $(if ($wm.Count) { "PODMENA ($($wm
 Write-Host "  Dispetcher zadach    : proveray glazami (imennya menyaetsya, pamyat - net)"
 Write-Host "  Obem VRAM            : NE PODMENYAETSya, vsegda nastoyashchiy"
 Write-Host ''
-if ($sp -and $wm) { Write-Host 'REGISTRY CHAST RABOTAET.' -ForegroundColor Green }
-else { Write-Host 'Nuzhna PEREZAGRUZKA - skript chitaetsya tolko pri inicializacii ustroystva.' -ForegroundColor Yellow }
+if ($sp.Count -and $wm.Count) { Write-Host 'PODMENA PRIMENENA.' -ForegroundColor Green }
+else { Write-Host 'Podmena ne primenena - zapusti 1_POSTAVIT_5090.cmd' -ForegroundColor Yellow }
 Write-Host ''
 Read-Host 'Nazmi Enter'

@@ -20,6 +20,8 @@
     -Index     номер адаптера из списка (1-based). 0 = спросить, если их несколько
     -All       переименовать все найденные адаптеры (осторожно на ноутбуках:
                 встроенная графика тоже станет «RTX 5090»)
+    -DryRun    ничего не записывать, только показать, что было бы изменено.
+               Полезно на незнакомой машине, чтобы проверить выбор адаптера.
 #>
 [CmdletBinding()]
 param(
@@ -28,7 +30,8 @@ param(
     [ValidateSet('auto','nvidia','amd','intel','any')]
     [string]$Vendor  = 'auto',
     [int]$Index      = 0,
-    [switch]$All
+    [switch]$All,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Continue'
@@ -45,6 +48,11 @@ if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal
         '-GpuName', ('"' + $GpuName + '"'), '-VramGB', "$VramGB", '-Vendor', $Vendor,
         '-Index', "$Index") -WorkingDirectory $scriptDir
     exit
+}
+
+if ($DryRun) {
+    Write-Host 'REZHIM PROVORKI: nichego ne budet zapisano.' -ForegroundColor Yellow
+    Write-Host ''
 }
 
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
@@ -163,6 +171,11 @@ Write-Host "Obrabatyvaem: $($targets[0].Name)  [$($targets[0].VendorId):$($targe
 
 function Set-RegVal {
     param([string]$Path, [string]$Name, [string]$Type, $Value)
+    if ($DryRun) {
+        Write-Host ("      {0,-34} = {1}   [bylo by: dry-run]" -f $Name, $Value) -ForegroundColor DarkCyan
+        $script:Ok++
+        return $true
+    }
     try {
         if ($null -ne (Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction SilentlyContinue)) {
             Set-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -ErrorAction Stop
@@ -182,6 +195,7 @@ function Set-RegVal {
 # Ключи Enum\PCI*\... защищены: писать в них может только SYSTEM.
 function Unlock-Key {
     param([string]$Path)
+    if ($DryRun) { return $true }
     try {
         $acl = Get-Acl -LiteralPath $Path
         $acl.SetAccessRuleProtection($false, $true)
@@ -300,8 +314,10 @@ foreach ($t in $targets) {
             $txt  = [IO.File]::ReadAllText($infPath, [Text.Encoding]::ASCII)
             $rx   = [regex]::new('(?im)^(' + [regex]::Escape($infToken) + '\s*=\s*)"[^"]*"')
             if ($rx.IsMatch($txt)) {
-                [IO.File]::WriteAllText($infPath, $rx.Replace($txt, '${1}"' + $GpuName + '"'), [Text.Encoding]::ASCII)
-                Write-Host ("      {0} -> {1}" -f $infToken, $GpuName) -ForegroundColor DarkGreen
+                if (-not $DryRun) {
+                    [IO.File]::WriteAllText($infPath, $rx.Replace($txt, '${1}"' + $GpuName + '"'), [Text.Encoding]::ASCII)
+                }
+                Write-Host ("      {0} -> {1}{2}" -f $infToken, $GpuName, $(if ($DryRun) { '   [dry-run]' } else { '' })) -ForegroundColor DarkGreen
                 $script:Ok++
             } else {
                 Write-Host "      token '$infToken' ne najden v INF" -ForegroundColor Red
