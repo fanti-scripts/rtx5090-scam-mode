@@ -1,0 +1,29 @@
+LIBRARY dxgi
+EXPORTS
+    ; --- ordinals preserved from the original System32\dxgi.dll ---
+    ; Every entry is a local symbol: MSVC cannot emit PE forwarders, and the
+    ; self-import approach is unusable here (dxgi.dll would import from itself).
+    ApplyCompatResolutionQuirking   = Fwd_ApplyCompatResolutionQuirking @1
+    CompatString                    = Fwd_CompatString @2
+    CompatValue                     = Fwd_CompatValue @3
+    DXGIDumpJournal                 = Fwd_DXGIDumpJournal @4
+    PIXBeginCapture                 = Fwd_PIXBeginCapture @5
+    PIXEndCapture                   = Fwd_PIXEndCapture @6
+    PIXGetCaptureState              = Fwd_PIXGetCaptureState @7
+    SetAppCompatStringPointer       = Fwd_SetAppCompatStringPointer @8
+    UpdateHMDEmulationStatus        = Fwd_UpdateHMDEmulationStatus @9
+
+    ; --- implemented locally: the real factory object is returned untouched,
+    ;     the adapter vtable is patched instead ---
+    CreateDXGIFactory               = Proxy_CreateDXGIFactory @10
+    CreateDXGIFactory1              = Proxy_CreateDXGIFactory1 @11
+    CreateDXGIFactory2              = Proxy_CreateDXGIFactory2 @12
+
+    DXGID3D10CreateDevice            = Fwd_DXGID3D10CreateDevice @13
+    DXGID3D10CreateLayeredDevice     = Fwd_DXGID3D10CreateLayeredDevice @14
+    DXGID3D10GetLayeredDeviceSize    = Fwd_DXGID3D10GetLayeredDeviceSize @15
+    DXGID3D10RegisterLayers          = Fwd_DXGID3D10RegisterLayers @16
+    DXGIDeclareAdapterRemovalSupport = Fwd_DXGIDeclareAdapterRemovalSupport @17
+    DXGIDisableVBlankVirtualization  = Fwd_DXGIDisableVBlankVirtualization @18
+    DXGIGetDebugInterface1           = Fwd_DXGIGetDebugInterface1 @19
+    DXGIReportAdapterConfiguration   = Fwd_DXGIReportAdapterConfiguration @20

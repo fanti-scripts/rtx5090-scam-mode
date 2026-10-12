@@ -1,0 +1,15 @@
+# По умолчанию - нормализация в LF внутри репозитория
+* text=auto
+
+# Windows: cmd и PowerShell запускаются у нас, им нужен CRLF
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Исходники C/C++ и .def - всегда LF
+*.cpp text eol=lf
+*.def text eol=lf
+*.h   text eol=lf
+
+# Бэкапы реестра не трогаем, они должны остаться байт-в-байт
+*.reg binary
+*.bak binary
