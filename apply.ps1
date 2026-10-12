@@ -1,20 +1,34 @@
 ﻿#Requires -Version 5.1
 <#
-  RTX 5090 Scam Mode v3 - ПРИМЕНЕНИЕ
+  RTX 5090 Scam Mode v4 - ПРИМЕНЕНИЕ
 
-  Windows читает имя видеокарты из ТРЁХ разных мест, и правки нужны во всех:
+  Windows берёт имя видеокарты из трёх независимых мест, поэтому правятся все три:
 
-    1. ...\Class\{4d36e968-...}\0000\DriverDesc
-    2. ...\Enum\PCI\VEN_10DE&DEV_2187...\<instance>\DeviceDesc
-       <- это то, что реально показывает Диспетчер устройств, dxdiag, WMI
-       и «Параметры -> Система -> О системе»
-    3. C:\Windows\INF\<oem>.inf, секция [Strings]
-       <- чтобы имя не вернулось при переустановке устройства
+    1. ...\Control\Class\{4d36e968-...}\000N   DriverDesc + HardwareInformation.*
+    2. ...\Enum\PCI\VEN_xxxx&DEV_xxxx\&...    DeviceDesc  <- Диспетчер устройств,
+                                                 dxdiag, WMI, «Параметры -> О системе»
+    3. C:\Windows\INF\<oem>.inf, [Strings]     чтобы имя не вернулось при
+                                                 переустановке драйвера
+
+  Адаптеры находятся по ClassGUID класса Display, поэтому скрипт не привязан
+  к конкретной модели и работает с NVIDIA / AMD / Intel.
+
+  Параметры:
+    -GpuName   имя, которое будет показывать система
+    -VramGB    объём видеопамяти
+    -Vendor    auto (по умолчанию) | nvidia | amd | intel | any
+    -Index     номер адаптера из списка (1-based). 0 = спросить, если их несколько
+    -All       переименовать все найденные адаптеры (осторожно на ноутбуках:
+                встроенная графика тоже станет «RTX 5090»)
 #>
 [CmdletBinding()]
 param(
     [string]$GpuName = 'NVIDIA GeForce RTX 5090',
-    [double]$VramGB  = 24          # у настоящей 5090 - 24 ГБ GDDR7
+    [double]$VramGB  = 24,                     # у настоящей 5090 - 24 ГБ GDDR7
+    [ValidateSet('auto','nvidia','amd','intel','any')]
+    [string]$Vendor  = 'auto',
+    [int]$Index      = 0,
+    [switch]$All
 )
 
 $ErrorActionPreference = 'Continue'
@@ -28,15 +42,124 @@ if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal
     $exe = (Get-Process -Id $PID).Path
     Start-Process -FilePath $exe -Verb RunAs -ArgumentList @(
         '-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', ('"' + $PSCommandPath + '"'),
-        '-GpuName', ('"' + $GpuName + '"'), '-VramGB', "$VramGB")
+        '-GpuName', ('"' + $GpuName + '"'), '-VramGB', "$VramGB", '-Vendor', $Vendor,
+        '-Index', "$Index") -WorkingDirectory $scriptDir
     exit
 }
 
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
+$DISPLAY_CLASS = '{4d36e968-e325-11ce-bfc1-08002be10318}'
+$VENDORS = @{ nvidia = '10DE'; amd = '1002'; intel = '8086' }
+
 $script:Ok = 0
 $script:Failed = 0
+
+# ============================================================== обнаружение ===
+
+function Get-DisplayAdapters {
+    $found = @()
+    $enumBase = 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI'
+    if (-not (Test-Path -LiteralPath $enumBase)) { return $found }
+
+    foreach ($hw in Get-ChildItem -LiteralPath $enumBase -ErrorAction SilentlyContinue) {
+        if ($hw.PSChildName -notmatch '^VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})') { continue }
+        $vendorId = $Matches[1].ToUpper()
+        $deviceId = $Matches[2].ToUpper()
+
+        foreach ($inst in Get-ChildItem -LiteralPath $hw.PSPath -ErrorAction SilentlyContinue) {
+            $p = Get-ItemProperty -LiteralPath $inst.PSPath -ErrorAction SilentlyContinue
+            if (-not $p -or -not $p.DeviceDesc) { continue }
+            # берём только настоящие видеоадаптеры, а не программные (WARP и т.п.)
+            if ("$($p.ClassGUID)" -ne $DISPLAY_CLASS) { continue }
+            if (-not $p.Driver) { continue }
+
+            $found += [pscustomobject]@{
+                VendorId = $vendorId
+                DeviceId = $deviceId
+                HwId     = $hw.PSChildName
+                Instance = $inst.PSChildName
+                EnumPath = $inst.PSPath
+                ClassKey = $p.Driver
+                Name     = (("$($p.DeviceDesc)" -split ';')[-1]).Trim()
+            }
+        }
+    }
+    return $found
+}
+
+function Show-Adapters {
+    param([array]$List)
+    if (-not $List -or $List.Count -eq 0) {
+        Write-Host '  (net)' -ForegroundColor DarkGray
+        return
+    }
+    Write-Host ("  {0,-4} {1,-9} {2,-9} {3}" -f '#','VEN:DEV','class','.NET devichestvo') -ForegroundColor DarkGray
+    for ($n = 0; $n -lt $List.Count; $n++) {
+        $a = $List[$n]
+        Write-Host ("  {0,-4} {1,-9} {2,-9} {3}" -f ($n+1), "$($a.VendorId):$($a.DeviceId)", ($a.ClassKey -replace '.*\\',''), $a.Name) -ForegroundColor White
+    }
+}
+
+$adapters = @(Get-DisplayAdapters)
+
+Write-Host "Cel: '$GpuName' / $VramGB GB" -ForegroundColor Green
+Write-Host ''
+Write-Host '=== NAKHODENNIE VIDEOADAPTERY ===' -ForegroundColor Cyan
+Show-Adapters $adapters
+
+if ($adapters.Count -eq 0) {
+    Write-Host 'Videoadapterov klassa Display ne naydeno.' -ForegroundColor Red
+    Write-Host 'Esli eto virtualnaya/VGA- kartochka - skript ee ne trogaet.' -ForegroundColor Yellow
+    Read-Host 'Nazmi Enter'; exit 1
+}
+
+# ---------- фильтр по вендору ----------
+$candidates = $adapters
+if ($Vendor -ne 'auto' -and $Vendor -ne 'any') {
+    $want = $VENDORS[$Vendor]
+    $candidates = @($adapters | Where-Object { $_.VendorId -eq $want })
+    if ($candidates.Count -eq 0) {
+        Write-Host "Kartochek proizvoditelya '$Vendor' (VEN_$want) ne naydeno." -ForegroundColor Red
+        Read-Host 'Nazmi Enter'; exit 1
+    }
+    Write-Host "Filtr: $Vendor -> $($candidates.Count)" -ForegroundColor DarkGray
+}
+
+# ---------- выбор адаптера ----------
+if ($All) {
+    $targets = $candidates
+    if ($targets.Count -gt 1) {
+        Write-Host ''
+        Write-Host 'VNIMANIE - pereimenovyvayutsya VSE adaptory:' -ForegroundColor Yellow
+        Show-Adapters $targets
+        Write-Host 'Na ноутbukakh vstroennaya grafika tozhe sdelaet «RTX 5090».' -ForegroundColor Yellow
+        if (-not (Read-Host 'Prodolzhit? (y/n)') -match '^(y|yes|д|да)$') { exit 0 }
+    }
+} elseif ($Index -gt 0) {
+    if ($Index -gt $candidates.Count) { Write-Host "Nomer $Index vne diapazona 1..$($candidates.Count)" -ForegroundColor Red; exit 1 }
+    $targets = @($candidates[$Index - 1])
+} elseif ($candidates.Count -eq 1) {
+    $targets = $candidates
+} else {
+    Write-Host ''
+    Write-Host 'Naydeno bolshe odnoy kartochki. Viberi nomer (0 = otmenit):' -ForegroundColor Yellow
+    Show-Adapters $candidates
+    $choice = Read-Host 'Nomer'
+    $n = 0
+    if ([int]::TryParse($choice, [ref]$n) -and $n -ge 1 -and $n -le $candidates.Count) {
+        $targets = @($candidates[$n - 1])
+    } else {
+        Write-Host 'Otmeneno.' -ForegroundColor Yellow
+        exit 0
+    }
+}
+
+Write-Host ''
+Write-Host "Obrabatyvaem: $($targets[0].Name)  [$($targets[0].VendorId):$($targets[0].DeviceId)]" -ForegroundColor Cyan
+
+# ============================================================== вспомогательное ===
 
 function Set-RegVal {
     param([string]$Path, [string]$Name, [string]$Type, $Value)
@@ -46,11 +169,11 @@ function Set-RegVal {
         } else {
             New-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -PropertyType $Type -Force -ErrorAction Stop | Out-Null
         }
-        Write-Host ("    {0,-34} = {1}" -f $Name, $Value) -ForegroundColor DarkGreen
+        Write-Host ("      {0,-34} = {1}" -f $Name, $Value) -ForegroundColor DarkGreen
         $script:Ok++
         return $true
     } catch {
-        Write-Host ("    {0,-34} ! {1}" -f $Name, $_.Exception.Message) -ForegroundColor Red
+        Write-Host ("      {0,-34} ! {1}" -f $Name, $_.Exception.Message) -ForegroundColor Red
         $script:Failed++
         return $false
     }
@@ -72,7 +195,7 @@ function Unlock-Key {
         Set-Acl -LiteralPath $Path -AclObject $acl
         return $true
     } catch {
-        Write-Host "    (unlock failed: $($_.Exception.Message))" -ForegroundColor DarkYellow
+        Write-Host "      (unlock failed: $($_.Exception.Message))" -ForegroundColor DarkYellow
         return $false
     }
 }
@@ -80,129 +203,114 @@ function Unlock-Key {
 function Patch-GpuKey {
     param([string]$Path, [long]$Bytes, [string]$Label)
 
-    Write-Host "  [$Label]" -ForegroundColor Cyan
     # Формат настоящего драйвера: qwMemorySize = точный размер,
     # MemorySize = размер - 1 МБ, обрезанный до 32 бит.
     #
     # НЕЛЬЗЯ писать ($Bytes - 0x100000) -band 0xFFFFFFFF:
     # в PowerShell 5.1 литерал 0xFFFFFFFF разбирается как Int32 -1,
-    # а не как 4294967295, поэтому -band ничего не обрезает и [uint32]
-    # падает. Обрезаем по модулю.
-    $qw = $Bytes
+    # а не как 4294967295, поэтому -band ничего не обрезает и [uint32] падает.
+    # Обрезаем по модулю.
     $dw = [uint32](($Bytes - 0x100000) % [long]4294967296)
 
+    Write-Host "  [$Label]" -ForegroundColor Cyan
     Set-RegVal $Path 'DriverDesc'                        'String' $GpuName | Out-Null
     Set-RegVal $Path 'HardwareInformation.AdapterString' 'String' $GpuName | Out-Null
     Set-RegVal $Path 'HardwareInformation.ChipType'     'String' $GpuName | Out-Null
-    Set-RegVal $Path 'HardwareInformation.qwMemorySize' 'QWord'  ([uint64]$qw) | Out-Null
+    Set-RegVal $Path 'HardwareInformation.qwMemorySize' 'QWord'  ([uint64]$Bytes) | Out-Null
     Set-RegVal $Path 'HardwareInformation.MemorySize'   'DWord'  $dw | Out-Null
 }
 
+function Find-VideoKeys {
+    # MatchingDeviceId имеет вид pci\ven_10de&dev_2187&subsys_8d951462,
+    # поэтому сравниваем по префиксу, а не точным равенством.
+    # Таких подключей обычно несколько (0000..000N) - все от одной карты,
+    # и Windows может использовать любой, поэтому патчим их все.
+    param([string]$VendorId, [string]$DeviceId)
+    $prefix = 'pci\ven_' + $VendorId.ToLower() + '&dev_' + $DeviceId.ToLower()
+    @(Get-ChildItem -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Video' -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ChildItem -LiteralPath $_.PSPath -ErrorAction SilentlyContinue } |
+        Where-Object {
+            $m = (Get-ItemProperty -LiteralPath $_.PSPath -Name 'MatchingDeviceId' -ErrorAction SilentlyContinue).MatchingDeviceId
+            $m -and $m.StartsWith($prefix)
+        })
+}
+
 $bytes = [long]($VramGB * 1GB)
-Write-Host "Cel: '$GpuName' / $VramGB GB ($bytes bayt)" -ForegroundColor Green
 
-# ================= 1. Class\...\0000 =================
-$classKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
-$candidates = Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue |
-    Where-Object { $_.PSChildName -match '^[0-9A-Fa-f]{4}$' } |
-    Where-Object {
-        $d = (Get-ItemProperty -LiteralPath $_.PSPath -Name 'DriverDesc' -ErrorAction SilentlyContinue).DriverDesc
-        $m = (Get-ItemProperty -LiteralPath $_.PSPath -Name 'MatchingDeviceId' -ErrorAction SilentlyContinue).MatchingDeviceId
-        $d -match 'NVIDIA' -or $m -match 'ven_10de'
+# ============================================================== патчинг ===
+
+$n = 0
+foreach ($t in $targets) {
+    $n++
+    Write-Host ''
+    Write-Host "### [$n] $($t.Name)" -ForegroundColor White
+
+    # --- 1. ключ класса ---
+    $classPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$($t.ClassKey)"
+    if (Test-Path -LiteralPath $classPath) {
+        $regFile = Join-Path $backupDir "class-$($t.ClassKey -replace '.*\\','')-$($t.DeviceId)-$stamp.reg"
+        & reg.exe export ($classPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') $regFile /y 2>$null | Out-Null
+        Patch-GpuKey $classPath $bytes "Class\$($t.ClassKey -replace '.*\\','')"
+    } else {
+        Write-Host "  [Class] ne nayden: $classPath" -ForegroundColor Red
+        $script:Failed++
     }
 
-$target = $candidates | Where-Object { $_.PSChildName -eq '0000' } | Select-Object -First 1
-if (-not $target) { $target = $candidates | Select-Object -First 1 }
-
-Write-Host ''
-if ($target) {
-    & reg.exe export ("HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\" + $target.PSChildName) (Join-Path $backupDir "class-$($target.PSChildName)-$stamp.reg") /y | Out-Null
-    Patch-GpuKey $target.PSPath $bytes "Class\$($target.PSChildName)"
-} else {
-    Write-Host 'NVIDIA GPU ne naydena v klase klassov!' -ForegroundColor Red
-    $script:Failed++
-}
-
-# ================= 2. Control\Video =================
-Write-Host ''
-$videoKeys = Get-ChildItem -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Video' -ErrorAction SilentlyContinue |
-    ForEach-Object { Get-ChildItem -LiteralPath $_.PSPath -ErrorAction SilentlyContinue } |
-    Where-Object {
-        $d = (Get-ItemProperty -LiteralPath $_.PSPath -Name 'DriverDesc' -ErrorAction SilentlyContinue).DriverDesc
-        $m = (Get-ItemProperty -LiteralPath $_.PSPath -Name 'MatchingDeviceId' -ErrorAction SilentlyContinue).MatchingDeviceId
-        $d -match 'NVIDIA' -or $m -match 'ven_10de'
+    # --- 2. Control\Video (обычно несколько подключей от одной карты) ---
+    $vks = @(Find-VideoKeys $t.VendorId $t.DeviceId)
+    if ($vks.Count -eq 0) {
+        Write-Host '  [Video] klyuchi ne naydeny' -ForegroundColor DarkYellow
+    } else {
+        foreach ($vk in $vks) {
+            $regFile = Join-Path $backupDir "video-$($t.DeviceId)-$($vk.PSChildName)-$stamp.reg"
+            & reg.exe export ($vk.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') $regFile /y 2>$null | Out-Null
+            Patch-GpuKey $vk.PSPath $bytes "Video\$($vk.PSChildName)"
+        }
     }
 
-$i = 0
-foreach ($vk in $videoKeys) {
-    $i++
-    & reg.exe export ($vk.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') (Join-Path $backupDir "video-$i-$stamp.reg") /y 2>$null | Out-Null
-    Patch-GpuKey $vk.PSPath $bytes "Video\$i"
-}
+    # --- 3. Enum\PCI ---
+    Write-Host '  [Enum\PCI - Device Manager / dxdiag / WMI]' -ForegroundColor Cyan
+    $regFile = Join-Path $backupDir ("enum-$($t.VendorId)-$($t.DeviceId)-$stamp.reg")
+    & reg.exe export ($t.EnumPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') $regFile /y 2>$null | Out-Null
+    Unlock-Key $t.EnumPath | Out-Null
 
-# ================= 3. Enum\PCI (то, что видит Диспетчер устройств) =================
-Write-Host ''
-Write-Host '  [Enum\PCI - Device Manager / dxdiag / WMI]' -ForegroundColor Cyan
-$enumKeys = Get-ChildItem -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI' -ErrorAction SilentlyContinue |
-    Where-Object { $_.PSChildName -match '^VEN_10DE&DEV_2187' } |
-    ForEach-Object { Get-ChildItem -LiteralPath $_.PSPath -ErrorAction SilentlyContinue }
-
-$infRef = $null
-$infToken = $null
-
-foreach ($ek in $enumKeys) {
-    $regPath = $ek.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM'
-    & reg.exe export $regPath (Join-Path $backupDir ("enum-" + ($ek.PSChildName -replace '[^a-zA-Z0-9]','_') + "-$stamp.reg")) /y 2>$null | Out-Null
-
-    Write-Host "    key: $($ek.PSChildName)" -ForegroundColor DarkGray
-    Unlock-Key $ek.PSPath | Out-Null
-
-    $cur = (Get-ItemProperty -LiteralPath $ek.PSPath -Name 'DeviceDesc' -ErrorAction SilentlyContinue).DeviceDesc
-    if (-not $cur) { continue }
-
+    $cur = (Get-ItemProperty -LiteralPath $t.EnumPath -Name 'DeviceDesc' -ErrorAction SilentlyContinue).DeviceDesc
+    $infRef = $null; $infToken = $null
     # формат:  @oem4.inf,%token%;Отображаемое имя
-    # ВАЖНО: ведущий '@' обязателен - он помечает значение как ссылку на INF.
-    # Без него строка становится литералом и Windows перестаёт её обновлять.
+    # Ведущий '@' обязателен - он помечает значение как ссылку на INF.
     if ($cur -match '^@([^,]+),([^;]+);(.*)$') {
-        if (-not $infRef) { $infRef = $Matches[1]; $infToken = $Matches[2].Trim('%') }
+        $infRef = $Matches[1]; $infToken = $Matches[2].Trim('%')
         $new = '@' + $Matches[1] + ',' + $Matches[2] + ';' + $GpuName
     } else {
         $new = $GpuName
     }
-    Set-RegVal $ek.PSPath 'DeviceDesc' 'String' $new | Out-Null
-
-    # FriendlyName, если он есть, тоже должен совпадать
-    if ($null -ne (Get-ItemProperty -LiteralPath $ek.PSPath -Name 'FriendlyName' -ErrorAction SilentlyContinue)) {
-        Set-RegVal $ek.PSPath 'FriendlyName' 'String' $GpuName | Out-Null
+    Set-RegVal $t.EnumPath 'DeviceDesc' 'String' $new | Out-Null
+    if ($null -ne (Get-ItemProperty -LiteralPath $t.EnumPath -Name 'FriendlyName' -ErrorAction SilentlyContinue)) {
+        Set-RegVal $t.EnumPath 'FriendlyName' 'String' $GpuName | Out-Null
     }
-}
 
-# ================= 4. INF =================
-if ($infRef -and $infToken) {
-    Write-Host ''
-    Write-Host "  [INF: $infRef, token $infToken]" -ForegroundColor Cyan
-    $infPath = Join-Path $env:SystemRoot "INF\$infRef"
-    if (Test-Path -LiteralPath $infPath) {
-        $infBak = Join-Path $backupDir "$infRef.bak"
-        Copy-Item -LiteralPath $infPath -Destination $infBak -Force
-        # файл чисто ASCII без BOM - любая ASCII-совместимая кодировка
-        # даёт побайтово идентичный результат
-        $txt = [IO.File]::ReadAllText($infPath, [Text.Encoding]::ASCII)
-        $esc = [regex]::Escape($infToken)
-        $rx = [regex]::new('(?im)^(' + $esc + '\s*=\s*)"[^"]*"')
-        if ($rx.IsMatch($txt)) {
-            $txt2 = $rx.Replace($txt, '${1}"' + $GpuName + '"')
-            [IO.File]::WriteAllText($infPath, $txt2, [Text.Encoding]::ASCII)
-            Write-Host ("    {0} -> {1}" -f $infToken, $GpuName) -ForegroundColor DarkGreen
-            Write-Host "    backup: $infBak" -ForegroundColor DarkGray
-            $script:Ok++
+    # --- 4. INF ---
+    if ($infRef -and $infToken) {
+        Write-Host "  [INF: $infRef / $infToken]" -ForegroundColor Cyan
+        $infPath = Join-Path $env:SystemRoot "INF\$infRef"
+        if (Test-Path -LiteralPath $infPath) {
+            Copy-Item -LiteralPath $infPath -Destination (Join-Path $backupDir "$infRef.bak") -Force
+            # файл драйвера - ASCII без BOM, любая ASCII-кодировка даёт
+            # побайтово идентичный результат
+            $txt  = [IO.File]::ReadAllText($infPath, [Text.Encoding]::ASCII)
+            $rx   = [regex]::new('(?im)^(' + [regex]::Escape($infToken) + '\s*=\s*)"[^"]*"')
+            if ($rx.IsMatch($txt)) {
+                [IO.File]::WriteAllText($infPath, $rx.Replace($txt, '${1}"' + $GpuName + '"'), [Text.Encoding]::ASCII)
+                Write-Host ("      {0} -> {1}" -f $infToken, $GpuName) -ForegroundColor DarkGreen
+                $script:Ok++
+            } else {
+                Write-Host "      token '$infToken' ne najden v INF" -ForegroundColor Red
+                $script:Failed++
+            }
         } else {
-            Write-Host "    token '$infToken' ne najden v INF" -ForegroundColor Red
+            Write-Host "      $infPath ne nayden" -ForegroundColor Red
             $script:Failed++
         }
-    } else {
-        Write-Host "    $infPath ne najden" -ForegroundColor Red
-        $script:Failed++
     }
 }
 
