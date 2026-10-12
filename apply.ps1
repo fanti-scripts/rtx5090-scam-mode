@@ -56,7 +56,6 @@ if ($DryRun) {
 }
 
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
 $DISPLAY_CLASS = '{4d36e968-e325-11ce-bfc1-08002be10318}'
 $VENDORS = @{ nvidia = '10DE'; amd = '1002'; intel = '8086' }
@@ -275,6 +274,59 @@ function Find-VideoKeys {
 
 $bytes = [long]($VramGB * 1GB)
 
+# ======================================================== оригинальный снимок ===
+#
+# Снимок оригинала делается ОДИН РАЗ и больше никогда не перезаписывается.
+#
+# Раньше бэкап брался перед каждой правкой с меткой времени, из-за чего
+# второй запуск подряд снимал в «оригинал» уже подменённое значение, и откат
+# возвращал систему в полусогласованное состояние: ключи Enum и INF
+# возвращались к настоящему имени, а ключ класса - к подменённому.
+#
+# Теперь оригинал лежит в backup\pristine\ под постоянными именами и
+# создаётся при первом запуске на чистой машине.
+
+$pristineDir = Join-Path $scriptDir 'backup\pristine'
+
+function Save-Pristine {
+    param([string]$PsPath, [string]$RegPath, [string]$Name)
+    New-Item -ItemType Directory -Path $pristineDir -Force | Out-Null
+    $dest = Join-Path $pristineDir "$Name.reg"
+    if (Test-Path -LiteralPath $dest) {
+        Write-Host "      (originalnyi bakap uzhe est, ne perezapisyvayu: $Name.reg)" -ForegroundColor DarkGray
+        return $false
+    }
+    & reg.exe export $RegPath $dest /y 2>$null | Out-Null
+    if (Test-Path -LiteralPath $dest) {
+        Write-Host "      originalnyi bakap: backup\pristine\$Name.reg" -ForegroundColor DarkGray
+        return $true
+    }
+    Write-Host "      (ne udalos sohranit originalnyi bakap $Name.reg)" -ForegroundColor Red
+    return $false
+}
+
+function Save-PristineInf {
+    param([string]$InfPath)
+    New-Item -ItemType Directory -Path $pristineDir -Force | Out-Null
+    $dest = Join-Path $pristineDir (Split-Path $InfPath -Leaf)
+    if (Test-Path -LiteralPath $dest) {
+        Write-Host "      (originalnyi bakap INF uzhe est, ne perezapisyvayu)" -ForegroundColor DarkGray
+        return $false
+    }
+    Copy-Item -LiteralPath $InfPath -Destination $dest -Force
+    Write-Host "      originalnyi bakap: backup\pristine\$(Split-Path $InfPath -Leaf)" -ForegroundColor DarkGray
+    return $true
+}
+
+# Предупреждаем, если снимка ещё нет, а система уже подменена -
+# значит оригинал будет снят с испорченного состояния.
+$firstRun = -not (Test-Path -LiteralPath $pristineDir)
+if ($firstRun -and ("$($targets[0].Name)" -like "*$GpuName*")) {
+    Write-Host ''
+    Write-Host 'VNIMANIE: sistema uzhe podyomena pod "$GpuName", a originalnogo snimka net.' -ForegroundColor Yellow
+    Write-Host 'Snimok okazhetsya s iskazhennogo sostoyaniya - otkat mozhet vernut chastiчно podmenu.' -ForegroundColor Yellow
+}
+
 # ============================================================== патчинг ===
 
 $n = 0
@@ -286,8 +338,7 @@ foreach ($t in $targets) {
     # --- 1. ключ класса ---
     $classPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\$($t.ClassKey)"
     if (Test-Path -LiteralPath $classPath) {
-        $regFile = Join-Path $backupDir "class-$($t.ClassKey -replace '.*\\','')-$($t.DeviceId)-$stamp.reg"
-        & reg.exe export ($classPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') $regFile /y 2>$null | Out-Null
+        Save-Pristine $classPath ($classPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') "class-$($t.VendorId)-$($t.DeviceId)" | Out-Null
         Patch-GpuKey $classPath $bytes "Class\$($t.ClassKey -replace '.*\\','')"
     } else {
         Write-Host "  [Class] ne nayden: $classPath" -ForegroundColor Red
@@ -300,16 +351,14 @@ foreach ($t in $targets) {
         Write-Host '  [Video] klyuchi ne naydeny' -ForegroundColor DarkYellow
     } else {
         foreach ($vk in $vks) {
-            $regFile = Join-Path $backupDir "video-$($t.DeviceId)-$($vk.PSChildName)-$stamp.reg"
-            & reg.exe export ($vk.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') $regFile /y 2>$null | Out-Null
+            Save-Pristine $vk.PSPath ($vk.PSPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') "video-$($t.VendorId)-$($t.DeviceId)-$($vk.PSChildName)" | Out-Null
             Patch-GpuKey $vk.PSPath $bytes "Video\$($vk.PSChildName)"
         }
     }
 
     # --- 3. Enum\PCI ---
     Write-Host '  [Enum\PCI - Device Manager / dxdiag / WMI]' -ForegroundColor Cyan
-    $regFile = Join-Path $backupDir ("enum-$($t.VendorId)-$($t.DeviceId)-$stamp.reg")
-    & reg.exe export ($t.EnumPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') $regFile /y 2>$null | Out-Null
+    Save-Pristine $t.EnumPath ($t.EnumPath -replace '^Microsoft\.PowerShell\.Core\\Registry::HKEY_LOCAL_MACHINE','HKLM') "enum-$($t.VendorId)-$($t.DeviceId)" | Out-Null
     Unlock-Key $t.EnumPath | Out-Null
 
     $cur = (Get-ItemProperty -LiteralPath $t.EnumPath -Name 'DeviceDesc' -ErrorAction SilentlyContinue).DeviceDesc
@@ -332,7 +381,7 @@ foreach ($t in $targets) {
         Write-Host "  [INF: $infRef / $infToken]" -ForegroundColor Cyan
         $infPath = Join-Path $env:SystemRoot "INF\$infRef"
         if (Test-Path -LiteralPath $infPath) {
-            Copy-Item -LiteralPath $infPath -Destination (Join-Path $backupDir "$infRef.bak") -Force
+            Save-PristineInf $infPath | Out-Null
             # файл драйвера - ASCII без BOM, любая ASCII-кодировка даёт
             # побайтово идентичный результат
             $txt  = [IO.File]::ReadAllText($infPath, [Text.Encoding]::ASCII)

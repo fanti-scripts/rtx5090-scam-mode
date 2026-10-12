@@ -1,14 +1,19 @@
 ﻿#Requires -Version 5.1
 <#
   RTX 5090 Scam Mode - ОТКАТ
-  Восстанавливает оригинальные значения из последнего бэкапа в backup\.
+
+  Восстанавливает оригинальные значения из backup\pristine\.
+
+  Снимок оригинала делается один раз при первом запуске apply.ps1 и больше
+  не перезаписывается, поэтому откат всегда возвращает систему в одно и то же
+  состояние - независимо от того, сколько раз запускалась подмена.
 #>
 [CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Continue'
 $scriptDir = Split-Path -Parent $PSCommandPath
-$backupDir = Join-Path $scriptDir 'backup'
+$pristine  = Join-Path $scriptDir 'backup\pristine'
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -18,36 +23,58 @@ if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal
     exit
 }
 
-if (-not (Test-Path $backupDir)) { Write-Host 'Bekapov net - otkazyvat nechego.' -ForegroundColor Red; exit 1 }
+if (-not (Test-Path -LiteralPath $pristine)) {
+    Write-Host 'NET ORIGINALNOGO SNIMKA' -ForegroundColor Red
+    Write-Host ''
+    Write-Host "Ozhidaetsya: $pristine" -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host 'Eto znachit, chto 1_POSTAVIT_5090.cmd eshche ne zapuskalsya' -ForegroundColor Yellow
+    Write-Host 'ili snimok udalen. Bez nego otkat vozmozhen tolko vruchnuyu:' -ForegroundColor Yellow
+    Write-Host '  - Dispetcher ustroystv -> GPU -> Svoistva -> Odin iz ustroystv -> Udali' -ForegroundColor DarkGray
+    Write-Host '  - perezagruzit PK, Windows perechitaet INF drayvera' -ForegroundColor DarkGray
+    Write-Host ''
+    Read-Host 'Nazmi Enter'
+    exit 1
+}
 
-function Import-Match {
-    param([string]$Filter, [string]$Title)
-    $files = Get-ChildItem $backupDir -Filter $Filter -ErrorAction SilentlyContinue |
-             Sort-Object LastWriteTime
-    if (-not $files) { Write-Host "  [$Title] - net bekapa" -ForegroundColor DarkYellow; return }
-    Write-Host "  [$Title] $($files.Count) fayl(ov)" -ForegroundColor Cyan
-    foreach ($f in $files) {
-        & reg.exe import $f.FullName 2>&1 | Out-Null
-        Write-Host "    $($f.Name)" -ForegroundColor DarkGray
+$regs = @(Get-ChildItem -LiteralPath $pristine -Filter '*.reg' -ErrorAction SilentlyContinue)
+if ($regs.Count -eq 0) {
+    Write-Host 'V papke snimkov net .reg faylov.' -ForegroundColor Red
+    Read-Host 'Nazmi Enter'; exit 1
+}
+
+Write-Host 'VOZVRASHCHAYU ORIGINALNOE SOSTOYANIE:' -ForegroundColor Yellow
+Write-Host ''
+
+foreach ($f in $regs) {
+    $out = & reg.exe import $f.FullName 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host ("  [+] {0}" -f $f.Name) -ForegroundColor DarkGreen
+    } else {
+        Write-Host ("  [!] {0} - import ne udalsya" -f $f.Name) -ForegroundColor Red
+        if ($out) { Write-Host "      $out" -ForegroundColor DarkRed }
     }
 }
 
-Write-Host 'OTKAT:' -ForegroundColor Yellow
-Import-Match 'class-*.reg' 'Class'
-Import-Match 'video-*.reg' 'Video'
-Import-Match 'enum-*.reg'  'Enum'
-
+Write-Host ''
 Write-Host '  [INF]' -ForegroundColor Cyan
-$infBaks = Get-ChildItem $backupDir -Filter '*.inf.bak' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime
-if ($infBaks) {
-    $b = $infBaks[-1]
-    $dest = Join-Path $env:SystemRoot "INF\$($b.Name -replace '\.bak$','')"
-    Copy-Item -LiteralPath $b.FullName -Destination $dest -Force
-    Write-Host "    vosstanovlen $($b.Name) -> $dest" -ForegroundColor DarkGreen
+$infs = @(Get-ChildItem -LiteralPath $pristine -Filter '*.inf' -ErrorAction SilentlyContinue)
+if ($infs.Count -eq 0) {
+    Write-Host '    snimka INF net' -ForegroundColor DarkYellow
 } else {
-    Write-Host '    net kopii INF' -ForegroundColor DarkYellow
+    foreach ($b in $infs) {
+        $dest = Join-Path $env:SystemRoot "INF\$($b.Name)"
+        try {
+            Copy-Item -LiteralPath $b.FullName -Destination $dest -Force -ErrorAction Stop
+            Write-Host ("    [+] {0} -> {1}" -f $b.Name, $dest) -ForegroundColor DarkGreen
+        } catch {
+            Write-Host ("    [!] {0} - {1}" -f $b.Name, $_.Exception.Message) -ForegroundColor Red
+        }
+    }
 }
 
 Write-Host ''
-Write-Host 'Gotovo. PerEZAGRUZI PK.' -ForegroundColor Green
+Write-Host 'Gotovo. Puzhdaetsya PEREZAGRUZKA.' -ForegroundColor Green
+Write-Host 'Bez nee Windows mozhet derzhat staroe opisanie v keshe.' -ForegroundColor Yellow
+Write-Host ''
 Read-Host 'Nazmi Enter'
