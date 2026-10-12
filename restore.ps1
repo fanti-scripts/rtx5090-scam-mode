@@ -18,9 +18,20 @@ $pristine  = Join-Path $scriptDir 'backup\pristine'
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host 'Nuzhny prava administratora. Perezapusk s povysheniem...' -ForegroundColor Yellow
+    Write-Host 'Eсли vsplyvet okno "Kontrol ulichennyya dostupa" (UAC) - nazhmite "Da".' -ForegroundColor DarkGray
+    Write-Host ''
     $exe = (Get-Process -Id $PID).Path
-    Start-Process -FilePath $exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', ('"' + $PSCommandPath + '"'))
-    exit
+    try {
+        Start-Process -FilePath $exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', ('"' + $PSCommandPath + '"')) -WorkingDirectory $scriptDir -ErrorAction Stop
+        exit 0
+    } catch {
+        Write-Host ''
+        Write-Host 'NE UDALOS ZAPUSTIT S POVYSHENIEM PRAV.' -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor DarkRed
+        Write-Host 'Zapusti 2_OTKAT.cmd pravoi knopkoy -> "Zapustit kak administrator".' -ForegroundColor Yellow
+        Read-Host 'Nazmi Enter'
+        exit 1
+    }
 }
 
 if (-not (Test-Path -LiteralPath $pristine)) {

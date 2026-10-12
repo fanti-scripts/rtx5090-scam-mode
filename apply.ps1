@@ -42,12 +42,29 @@ $backupDir = Join-Path $scriptDir 'backup'
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host 'Nuzhny prava administratora. Perezapusk s povysheniem...' -ForegroundColor Yellow
+    Write-Host 'Eсли vsplyvet okno "Kontrol ulichennyya dostupa" (UAC) - nazhmite "Da".' -ForegroundColor DarkGray
+    Write-Host ''
     $exe = (Get-Process -Id $PID).Path
-    Start-Process -FilePath $exe -Verb RunAs -ArgumentList @(
-        '-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', ('"' + $PSCommandPath + '"'),
-        '-GpuName', ('"' + $GpuName + '"'), '-VramGB', "$VramGB", '-Vendor', $Vendor,
-        '-Index', "$Index") -WorkingDirectory $scriptDir
-    exit
+    try {
+        Start-Process -FilePath $exe -Verb RunAs -ArgumentList @(
+            '-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', ('"' + $PSCommandPath + '"'),
+            '-GpuName', ('"' + $GpuName + '"'), '-VramGB', "$VramGB", '-Vendor', $Vendor,
+            '-Index', "$Index") -WorkingDirectory $scriptDir -ErrorAction Stop
+        exit 0
+    } catch {
+        Write-Host ''
+        Write-Host 'NE UDALOS ZAPUSTIT S POVYSHENIEM PRAV.' -ForegroundColor Red
+        Write-Host $_.Exception.Message -ForegroundColor DarkRed
+        Write-Host ''
+        Write-Host 'Chto delat:' -ForegroundColor Yellow
+        Write-Host '  1. Zapusti et .fail pravoi knopkoy -> "Zapustit kak administrator"' -ForegroundColor Gray
+        Write-Host '  2. Ili otkroy komandnuyu stroku (cmd) ot imeni Administratora i zapusti:' -ForegroundColor Gray
+        Write-Host ('       "{0}"' -f (Join-Path $scriptDir '1_POSTAVIT_5090.cmd')) -ForegroundColor Gray
+        Write-Host '  3. Esli vы kto-to s UCHETNOY ZAPISEY bez prav Administratora,' -ForegroundColor Gray
+        Write-Host '     etot skript rabotat ne budet - nuzhny pravi polnogo administratora.' -ForegroundColor Gray
+        Read-Host 'Nazmi Enter'
+        exit 1
+    }
 }
 
 if ($DryRun) {
