@@ -66,19 +66,18 @@ Get-CimInstance Win32_VideoController | ForEach-Object {
     Write-Host ("  {0}  [{1}]{2}" -f $_.Name, $_.DriverVersion, $mark) -ForegroundColor $(if($mark){'Green'}else{'Gray'})
 }
 
-Line '5. DXGI - to, chto pokazyvaet Dispetcher zadach'
-$gpuinfo = Join-Path $PSScriptRoot 'src\out\gpuinfo.exe'
-if (-not (Test-Path $gpuinfo)) { $gpuinfo = Join-Path $PSScriptRoot 'out\gpuinfo.exe' }
-if (Test-Path $gpuinfo) {
-    # запускаем из отдельной папки: рядом с exe не должно лежать наша прокси-dxgi.dll
-    $tmp = Join-Path $env:TEMP ('gpuinfo_' + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-    Copy-Item $gpuinfo $tmp -Force
-    & (Join-Path $tmp 'gpuinfo.exe') | Select-Object -First 6 | Out-String | Write-Host
-    Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host '  (Eto realnoe imya cherez DXGI - ego menyaet tolko DLL-proksi, ona ne rabotaet)' -ForegroundColor DarkYellow
+Line '5. DXGI / nvidia-sli - to, chto realno soobshchaet drayver'
+$srcBin = Join-Path $PSScriptRoot 'src\out'
+$nsmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+if (-not $nsmi) { $p = Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'; if (Test-Path $p) { $nsmi = Get-Item $p } }
+if ($nsmi) {
+    try {
+        (& $nsmi.Source --query-gpu=name,memory.total --format=csv 2>&1 | Out-String).Trim() -split "`r?`n" |
+            ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
+        Write-Host '  (Eto VSEGDA nastoyashchee - chitaet pryamuyu iz NVAPI)' -ForegroundColor DarkYellow
+    } catch { Write-Host "  oshibka: $($_.Exception.Message)" }
 } else {
-    Write-Host "  net gpuinfo.exe - sobiri cherez src\build.ps1" -ForegroundColor DarkYellow
+    Write-Host "  net nvidia-smi" -ForegroundColor DarkYellow
 }
 
 Line 'Itog'
@@ -86,7 +85,8 @@ $sp = @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Objec
 $wm = @(Get-CimInstance Win32_VideoController | Where-Object { "$($_.Name)" -like '*5090*' })
 Write-Host ("  Dispetcher ustroystv : {0}" -f $(if ($sp.Count) { "PODMENA ($($sp.Count))" } else { 'poka ne primeneno' }))
 Write-Host ("  WMI / O systeme      : {0}" -f $(if ($wm.Count) { "PODMENA ($($wm.Count))" } else { 'poka ne primeneno' }))
-Write-Host "  Dispetcher zadach    : vsegda realnoe (chitaet DXGI napryamuyu)"
+Write-Host "  Dispetcher zadach    : proveray glazami (imennya menyaetsya, pamyat - net)"
+Write-Host "  Obem VRAM            : NE PODMENYAETSya, vsegda nastoyashchiy"
 Write-Host ''
 if ($sp -and $wm) { Write-Host 'REGISTRY CHAST RABOTAET.' -ForegroundColor Green }
 else { Write-Host 'Nuzhna PEREZAGRUZKA - skript chitaetsya tolko pri inicializacii ustroystva.' -ForegroundColor Yellow }
