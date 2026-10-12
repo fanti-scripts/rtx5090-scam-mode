@@ -193,11 +193,35 @@ function Set-RegVal {
 }
 
 # Ключи Enum\PCI*\... защищены: писать в них может только SYSTEM.
+#
+# ВАЖНО: здесь нужно именно -Path, а не -LiteralPath.
+# Get-Acl -LiteralPath падает с ItemNotFoundException на путях реестра,
+# содержащих '&', а во всех ключах Enum\PCI он есть по построению:
+#   VEN_10DE&DEV_2187&SUBSYS_8D951462&REV_A1
+# При этом Get-ItemProperty/Set-ItemProperty -LiteralPath работают нормально -
+# ломается только работа с дескрипторами безопасности.
 function Unlock-Key {
     param([string]$Path)
     if ($DryRun) { return $true }
+
+    $acl = $null
     try {
-        $acl = Get-Acl -LiteralPath $Path
+        $acl = Get-Acl -Path $Path -ErrorAction Stop
+    } catch {
+        Write-Host "      (ne udalos prochitatat ACL: $($_.Exception.Message))" -ForegroundColor DarkYellow
+        return $false
+    }
+    if (-not $acl) {
+        Write-Host '      (ACL = NULL, propuskayu razblokirovku)' -ForegroundColor DarkYellow
+        return $false
+    }
+
+    try {
+        # забираем владение себе, иначе Set-Acl может не хватить прав
+        $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ($acl.Owner -ne $me) {
+            try { $acl.SetOwner([System.Security.Principal.NTAccount]$me) } catch { }
+        }
         $acl.SetAccessRuleProtection($false, $true)
         $rule = New-Object System.Security.AccessControl.RegistryAccessRule(
             'BUILTIN\Administrators',
@@ -206,7 +230,7 @@ function Unlock-Key {
             ([System.Security.AccessControl.PropagationFlags]::None),
             ([System.Security.AccessControl.AccessControlType]::Allow))
         $acl.SetAccessRule($rule)
-        Set-Acl -LiteralPath $Path -AclObject $acl
+        Set-Acl -Path $Path -AclObject $acl -ErrorAction Stop
         return $true
     } catch {
         Write-Host "      (unlock failed: $($_.Exception.Message))" -ForegroundColor DarkYellow
